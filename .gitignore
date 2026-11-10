@@ -6,3 +6,8 @@ __marimo__/
 *.png
 __pycache__/
 *.pyc
+results/viewer_chunks/
+results/clips/
+viewer/video/
+*.mp4
+*.zip

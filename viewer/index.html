@@ -1,0 +1,235 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Signal-drop viewer</title>
+<style>
+  :root { --bg:#f6f7f9; --panel:#fff; --line:#d9dde3; --ink:#1f2933; --mute:#6b7785; }
+  * { box-sizing: border-box; }
+  body { margin:0; font:13px/1.35 -apple-system, "Segoe UI", sans-serif; color:var(--ink); background:var(--bg); height:100vh; display:grid; grid-template-columns:340px 1fr; }
+  #side { border-right:1px solid var(--line); background:var(--panel); display:flex; flex-direction:column; min-height:0; }
+  #filters { padding:10px; border-bottom:1px solid var(--line); display:grid; gap:6px; }
+  #filters label { display:grid; grid-template-columns:70px 1fr; align-items:center; gap:6px; color:var(--mute); }
+  select, input[type=number], button { font:inherit; padding:3px 6px; border:1px solid var(--line); border-radius:4px; background:#fff; }
+  button { cursor:pointer; } button.on { background:#1f2933; color:#fff; border-color:#1f2933; }
+  #count { padding:6px 10px; color:var(--mute); border-bottom:1px solid var(--line); }
+  #list { overflow-y:auto; flex:1; }
+  .ev { padding:5px 10px; border-bottom:1px solid #eef0f3; cursor:pointer; display:grid; grid-template-columns:12px 1fr; gap:8px; }
+  .ev:hover { background:#f1f4f8; } .ev.sel { background:#e3edfb; }
+  .chip { width:12px; height:12px; border-radius:3px; margin-top:3px; }
+  .ev small { color:var(--mute); } .emgtag { color:#7d3c98; font-weight:600; }
+  #main { display:flex; flex-direction:column; min-width:0; min-height:0; padding:10px; gap:8px; }
+  #vwrap { background:#000; border-radius:6px; display:flex; justify-content:center; align-items:center; height:38vh; min-height:200px; position:relative; }
+  #vwrap video { max-height:100%; max-width:100%; }
+  #novideo { position:absolute; color:#cfd6df; text-align:center; padding:20px; }
+  #bar { display:flex; flex-wrap:wrap; gap:8px; align-items:center; }
+  #bar .grow { flex:1; }
+  #title { font-weight:600; }
+  #cvwrap { flex:1; min-height:300px; position:relative; }
+  #cv { position:absolute; inset:0; width:100%; height:100%; background:var(--panel); border:1px solid var(--line); border-radius:6px; cursor:crosshair; }
+  #legend span { display:inline-flex; align-items:center; gap:4px; margin-right:12px; color:var(--mute); }
+  #legend i { width:12px; height:12px; border-radius:3px; display:inline-block; }
+  #help { color:var(--mute); }
+</style>
+</head>
+<body>
+<div id="side">
+  <div id="filters">
+    <label>session <select id="fSession"></select></label>
+    <label>type <select id="fType"><option value="">all</option><option>ALL_THREE</option><option>PAIR</option><option>SINGLE</option></select></label>
+    <label>EMG <select id="fEmg"><option value="">all</option><option value="1">burst</option><option value="0">no burst</option></select></label>
+    <label>video <select id="fVideo"><option value="">all</option><option value="1">has video</option></select></label>
+  </div>
+  <div id="count"></div>
+  <div id="list"></div>
+</div>
+<div id="main">
+  <div id="vwrap"><video id="vid" preload="auto" muted playsinline></video><div id="novideo" hidden></div></div>
+  <div id="bar">
+    <span id="title">loading…</span><span class="grow"></span>
+    <button id="bPrev">◀ prev</button><button id="bPlay">▶ play</button><button id="bNext">next ▶</button>
+    <span>speed</span><button class="spd" data-s="0.25">0.25×</button><button class="spd" data-s="0.5">0.5×</button><button class="spd on" data-s="1">1×</button>
+    <span>window ±</span><input id="win" type="number" min="1" max="8" step="0.5" value="5" style="width:56px"> s
+    <span>camera</span><select id="camSel"><option>left</option><option>right</option></select>
+  </div>
+  <div id="cvwrap"><canvas id="cv"></canvas></div>
+  <div id="legend"></div>
+  <div id="help">Keys: ← / → previous / next event · space play / pause · 1 / 2 / 3 = 0.25× / 0.5× / 1× · click the traces to seek. Cursor time comes from the camera frame times (cam_t), no fixed offset.</div>
+</div>
+<script>
+// ---------------------------------------------------------------- pure helpers (tested in node)
+// <pure>
+function lowerBound(a, x) { let lo = 0, hi = a.length; while (lo < hi) { const m = (lo + hi) >> 1; if (a[m] < x) lo = m + 1; else hi = m; } return lo; }
+// recording time -> video currentTime (middle of the frame, so the seek lands on the right frame). null if not covered.
+function recToVideo(ch, fps, t) {
+  const c = ch.cam_t; if (!c.length || t < c[0] || t > c[c.length - 1]) return null;
+  return (ch.cam_frame0 + lowerBound(c, t) + 0.5) / fps;
+}
+// video currentTime -> recording time of the frame being shown.
+function videoToRec(ch, fps, ct) {
+  const k = Math.min(Math.max(Math.floor(ct * fps + 1e-6) - ch.cam_frame0, 0), ch.cam_t.length - 1);
+  return ch.cam_t[k];
+}
+function decode(arr, scale) { const o = new Float32Array(arr.length); for (let i = 0; i < arr.length; i++) o[i] = arr[i] * scale; return o; }
+// </pure>
+
+const CHUNKS = "../results/viewer_chunks/";
+const COLORS = { // class x EMG
+  "ALL_THREE|0": "#c0392b", "ALL_THREE|1": "#7d3c98", "OTHER|0": "#e08e0b", "OTHER|1": "#566573" };
+const TRACE = { lfp: "#1baf7a", thermistor: "#2a78d6", airflow: "#eb6834", emg: "#7f8c8d" };
+const $ = id => document.getElementById(id);
+let events = [], shown = [], cur = -1, ch = null, ev = null, tRec = 0, half = 5, speed = 1, playing = false, vidOK = false, last = 0, cam = "left", loadId = 0;
+const vid = $("vid"), cv = $("cv"), ctx = cv.getContext("2d");
+
+function evColor(e) { return COLORS[(e.type === "ALL_THREE" ? "ALL_THREE" : "OTHER") + "|" + (e.emg ? 1 : 0)]; }
+
+$("legend").innerHTML = [["ALL_THREE|0", "all three, no EMG burst (candidate pause)"], ["ALL_THREE|1", "all three + EMG burst"],
+  ["OTHER|0", "single / pair, no EMG burst (candidate sensor failure)"], ["OTHER|1", "single / pair + EMG burst"]]
+  .map(([k, t]) => `<span><i style="background:${COLORS[k]}"></i>${t}</span>`).join("") + `<span>dashed outline = EMG burst</span>`;
+
+// ------------------------------------------------------------------------------ event list / filters
+function applyFilters() {
+  const s = $("fSession").value, t = $("fType").value, m = $("fEmg").value, v = $("fVideo").value;
+  const keep = cur >= 0 ? shown[cur] : null;
+  shown = events.filter(e => (!s || e.session === s) && (!t || e.type === t) && (!m || (e.emg ? "1" : "0") === m) && (!v || e.video));
+  $("count").textContent = `${shown.length} of ${events.length} events`;
+  $("list").innerHTML = shown.map((e, i) => `<div class="ev" data-i="${i}"><div class="chip" style="background:${evColor(e)}"></div>
+    <div><b>${e.type}</b> ${e.sensors.replace(/\+/g, " + ")} ${e.emg ? '<span class="emgtag">EMG ×' + e.peak.toFixed(1) + "</span>" : ""}<br>
+    <small>${e.session.slice(0, 10)} …${e.session.slice(-4)} · ${e.ts.toFixed(1)}–${e.te.toFixed(1)} s · ${(e.te - e.ts).toFixed(2)} s${e.video ? " · video" : ""}</small></div></div>`).join("");
+  cur = keep ? shown.indexOf(keep) : -1;
+  if (cur >= 0) markSel();
+}
+function markSel() {
+  document.querySelectorAll(".ev.sel").forEach(n => n.classList.remove("sel"));
+  const n = document.querySelector(`.ev[data-i="${cur}"]`); if (n) { n.classList.add("sel"); n.scrollIntoView({ block: "nearest" }); }
+}
+$("list").addEventListener("click", e => { const n = e.target.closest(".ev"); if (n) select(+n.dataset.i); });
+["fSession", "fType", "fEmg", "fVideo"].forEach(id => $(id).addEventListener("change", e => { applyFilters(); e.target.blur(); }));
+
+// -------------------------------------------------------------------------------------- selection
+async function select(i) {
+  if (i < 0 || i >= shown.length) return;
+  pause(); cur = i; ev = shown[i]; markSel(); location.hash = ev.id;
+  const id = ++loadId;
+  $("title").textContent = `${ev.type} · ${ev.sensors} · ${ev.ts.toFixed(2)}–${ev.te.toFixed(2)} s${ev.emg ? " · EMG burst ×" + ev.peak.toFixed(1) : ""}`;
+  const r = await fetch(CHUNKS + ev.chunk); if (id !== loadId) return;
+  const c = await r.json(); if (id !== loadId) return;
+  ch = c; for (const k of ["lfp", "thermistor", "airflow", "emg", "rms"]) if (c[k]) c[k + "_f"] = decode(c[k], c[k + "_scale"]);
+  half = Math.min(+$("win").value || 5, 8);
+  await setupVideo();
+  seek(Math.max(ch.t0, (ev.ts + ev.te) / 2 - half));
+}
+async function setupVideo() {
+  const url = `video/${ev.session}_${cam}.mp4`;
+  vidOK = ev.video && ch.cam_t.length > 0;
+  $("novideo").hidden = vidOK;
+  vid.style.display = vidOK ? "" : "none";
+  if (!vidOK) { $("novideo").textContent = ev.video === false && !ch.cam_t.length ? "signals only: event outside the camera coverage or no video for this session" : "signals only"; return; }
+  if (!vid.src.endsWith(url)) {
+    vid.src = url;
+    await new Promise(res => { vid.onloadedmetadata = res; vid.onerror = () => { vidOK = false; res(); }; });
+    if (!vidOK) { $("novideo").hidden = false; $("novideo").textContent = "video could not be loaded (not served with Range support? use viewer/serve.py)"; vid.style.display = "none"; }
+  }
+  vid.playbackRate = speed;
+}
+function seek(t) {
+  tRec = t;
+  if (vidOK) { const ct = recToVideo(ch, ev.fps, t); if (ct !== null) vid.currentTime = ct; }
+  draw();
+}
+function play() { if (!ch) return; if (tRec >= (ev.ts + ev.te) / 2 + half - 0.05) seek((ev.ts + ev.te) / 2 - half);
+  playing = true; $("bPlay").textContent = "❚❚ pause"; last = performance.now(); if (vidOK) { vid.playbackRate = speed; vid.play(); } }
+function pause() { playing = false; $("bPlay").textContent = "▶ play"; if (vidOK) vid.pause(); }
+function setSpeed(s) { speed = s; document.querySelectorAll(".spd").forEach(b => b.classList.toggle("on", +b.dataset.s === s)); vid.playbackRate = s; }
+
+$("bPlay").onclick = () => playing ? pause() : play();
+$("bPrev").onclick = () => select(cur - 1); $("bNext").onclick = () => select(cur + 1);
+document.querySelectorAll(".spd").forEach(b => b.onclick = () => setSpeed(+b.dataset.s));
+$("win").onchange = () => { half = Math.min(+$("win").value || 5, 8); draw(); };
+$("camSel").onchange = async e => { cam = e.target.value; e.target.blur(); if (ev) { const t = tRec; await setupVideo(); seek(t); } };
+document.addEventListener("keydown", e => {
+  if (["INPUT", "SELECT"].includes(document.activeElement.tagName) && e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
+  if (e.key === "ArrowRight") { select(cur + 1); e.preventDefault(); }
+  else if (e.key === "ArrowLeft") { select(cur - 1); e.preventDefault(); }
+  else if (e.key === " ") { playing ? pause() : play(); e.preventDefault(); }
+  else if (e.key === "1") setSpeed(0.25); else if (e.key === "2") setSpeed(0.5); else if (e.key === "3") setSpeed(1);
+});
+cv.addEventListener("click", e => { if (!ch) return; const r = cv.getBoundingClientRect(), g = geom(); seek(g.t0 + (e.clientX - r.left - g.l) / (g.w) * (g.t1 - g.t0)); });
+
+// ------------------------------------------------------------------------------------------ drawing
+function geom() { const r = cv.getBoundingClientRect(), c = (ev.ts + ev.te) / 2; return { l: 62, w: r.width - 72, t0: c - half, t1: c + half, H: r.height }; }
+function draw() {
+  const r = cv.getBoundingClientRect(), dpr = window.devicePixelRatio || 1;
+  if (cv.width !== Math.round(r.width * dpr)) { cv.width = Math.round(r.width * dpr); cv.height = Math.round(r.height * dpr); }
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0); ctx.clearRect(0, 0, r.width, r.height);
+  if (!ch) return;
+  const g = geom(), n = 4, top = 6, bot = 24, ph = (g.H - top - bot) / n, X = t => g.l + (t - g.t0) / (g.t1 - g.t0) * g.w;
+  const panels = [["LFP ch0", "lfp", "1–15 Hz"], ["thermistor", "thermistor", "1–15 Hz"], ["airflow", "airflow", "1–15 Hz"], ["EMG", "emg", "30–300 Hz + RMS"]];
+  ctx.font = "11px sans-serif";
+  panels.forEach(([name, key, sub], p) => {
+    const y0 = top + p * ph, y1 = y0 + ph - 4, d = ch[key + "_f"], fs = ch.fs;
+    ctx.fillStyle = "#fbfcfd"; ctx.fillRect(g.l, y0, g.w, y1 - y0);
+    // shaded drop interval
+    ctx.fillStyle = evColor(ev) + "40"; ctx.fillRect(X(ev.ts), y0, X(ev.te) - X(ev.ts), y1 - y0);
+    if (ev.emg) { ctx.setLineDash([4, 3]); ctx.strokeStyle = evColor(ev); ctx.strokeRect(X(ev.ts), y0 + .5, X(ev.te) - X(ev.ts), y1 - y0 - 1); ctx.setLineDash([]); }
+    if (!d) { ctx.fillStyle = "#999"; ctx.fillText(name + " not available", g.l + 6, y0 + 14); return; }
+    const i0 = Math.max(0, Math.floor((g.t0 - ch.t0) * fs)), i1 = Math.min(d.length, Math.ceil((g.t1 - ch.t0) * fs));
+    let lo = Infinity, hi = -Infinity;
+    for (let i = i0; i < i1; i++) { if (d[i] < lo) lo = d[i]; if (d[i] > hi) hi = d[i]; }
+    if (key === "emg") { hi = Math.max(Math.abs(lo), Math.abs(hi)); lo = -hi; }
+    if (!(hi > lo)) { hi = lo + 1; }
+    const pad = (hi - lo) * 0.06, Y = v => y1 - (v - (lo - pad)) / (hi - lo + 2 * pad) * (y1 - y0);
+    ctx.strokeStyle = TRACE[key]; ctx.lineWidth = 1; ctx.beginPath();
+    for (let i = i0; i < i1; i++) { const x = X(ch.t0 + i / fs), y = Y(d[i]); i === i0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y); }
+    ctx.stroke();
+    if (key === "emg") {
+      const rr = ch.rms_f, rf = ch.rms_rate || ch.rms_fs; ctx.strokeStyle = "#c0392b"; ctx.lineWidth = 1.8; ctx.beginPath();
+      let first = true;
+      for (let i = Math.max(0, Math.floor((g.t0 - ch.t0) * rf)); i < Math.min(rr.length, Math.ceil((g.t1 - ch.t0) * rf)); i++) {
+        const x = X(ch.t0 + i / rf), y = Y(rr[i]); first ? ctx.moveTo(x, y) : ctx.lineTo(x, y); first = false; }
+      ctx.stroke(); ctx.lineWidth = 1;
+      const th = 2.5 * ch.emg_median; if (th < hi) { ctx.setLineDash([2, 3]); ctx.strokeStyle = "#222"; ctx.beginPath(); ctx.moveTo(g.l, Y(th)); ctx.lineTo(g.l + g.w, Y(th)); ctx.stroke(); ctx.setLineDash([]); }
+    }
+    if (lo < 0 && hi > 0) { ctx.strokeStyle = "#0002"; ctx.beginPath(); ctx.moveTo(g.l, Y(0)); ctx.lineTo(g.l + g.w, Y(0)); ctx.stroke(); }
+    ctx.fillStyle = "#1f2933"; ctx.fillText(name, 4, y0 + 13); ctx.fillStyle = "#6b7785"; ctx.fillText(sub, 4, y0 + 26);
+    ctx.strokeStyle = "#d9dde3"; ctx.strokeRect(g.l + .5, y0 + .5, g.w, y1 - y0);
+  });
+  // time axis
+  ctx.fillStyle = "#6b7785"; ctx.strokeStyle = "#d9dde3";
+  const step = (g.t1 - g.t0) > 12 ? 2 : 1;
+  for (let t = Math.ceil(g.t0 / step) * step; t <= g.t1; t += step) { ctx.fillText(t.toFixed(0) + " s", X(t) - 12, g.H - 8); ctx.beginPath(); ctx.moveTo(X(t), top); ctx.lineTo(X(t), g.H - bot); ctx.stroke(); }
+  // cursor
+  const xc = X(Math.min(Math.max(tRec, g.t0), g.t1));
+  ctx.strokeStyle = "#000"; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.moveTo(xc, top); ctx.lineTo(xc, g.H - bot); ctx.stroke(); ctx.lineWidth = 1;
+  ctx.fillStyle = "#000"; ctx.fillText(`t = ${tRec.toFixed(3)} s${vidOK ? "  ·  video " + vid.currentTime.toFixed(3) + " s" : "  ·  signals only"}`, g.l + g.w - 215, top + 12);
+}
+function frame(now) {
+  if (ch) {
+    const end = (ev.ts + ev.te) / 2 + half;
+    if (vidOK) { if (!vid.seeking) tRec = videoToRec(ch, ev.fps, vid.currentTime); }
+    else if (playing) { tRec += (now - last) / 1000 * speed; }
+    last = now;
+    document.body.dataset.vs = `ready=${vid.readyState} size=${vid.videoWidth}x${vid.videoHeight} t=${vid.currentTime.toFixed(3)} err=${vid.error ? vid.error.code + ":" + vid.error.message : "none"} ok=${vidOK}`;
+    if (playing && tRec >= end) pause();
+    draw();
+  }
+  requestAnimationFrame(frame);
+}
+
+// ----------------------------------------------------------------------------------------- startup
+(async () => {
+  try {
+    const idx = await (await fetch(CHUNKS + "index.json")).json();
+    events = idx.events;
+  } catch (e) { $("title").textContent = "could not load results/viewer_chunks/index.json: run scripts/export_viewer_chunks.py and serve from the repo root"; return; }
+  const sess = [...new Set(events.map(e => e.session))];
+  $("fSession").innerHTML = `<option value="">all (${sess.length})</option>` + sess.map(s => `<option>${s}</option>`).join("");
+  applyFilters();
+  const h = decodeURIComponent(location.hash.slice(1)), k = shown.findIndex(e => e.id === h);
+  select(k >= 0 ? k : 0);
+  requestAnimationFrame(frame);
+})();
+window.addEventListener("resize", draw);
+</script>
+</body>
+</html>

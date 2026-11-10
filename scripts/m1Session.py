@@ -50,31 +50,7 @@ PAIR_COLORS = ["#eb6834", "#1baf7a", "#6250d6"]
 plt.rcParams.update({"figure.figsize": (11, 3.5), "axes.spines.top": False, "axes.spines.right": False,
                      "axes.grid": True, "grid.alpha": 0.3, "figure.dpi": 100})
 
-zscore = lambda x: (x - x.mean()) / x.std()
-smooth = lambda x, win_s: uniform_filter1d(x, int(win_s * FS), mode="constant")
-
-
-def bandpass(x, lo, hi, order=3):
-    b, a = signal.butter(order, [lo, hi], btype="band", fs=FS)
-    return signal.filtfilt(b, a, x)                       # forward-backward: no time shift
-
-
-def analytic(y):
-    """Hilbert analytic signal of an already band-passed y (fast FFT length)."""
-    n = len(y)
-    return signal.hilbert(y, N=sfft.next_fast_len(n))[:n]
-
-
-def get_phase(x, lo=1, hi=15):
-    return np.angle(analytic(bandpass(x, lo, hi)))
-
-
-def sliding_plv(p1, p2, win_s=5, step_s=1):
-    """Window-centre times and PLV values (5-s windows, 1-s step, as in the notebook)."""
-    W, S = int(win_s * FS), int(step_s * FS)
-    c = np.concatenate([[0], np.cumsum(np.exp(1j * (p1 - p2)))])      # O(n) windowed means
-    starts = np.arange(0, len(p1) - W, S)
-    return (starts + W / 2) / FS, np.abs(c[starts + W] - c[starts]) / W
+from ibl.signal import zscore, smooth, bandpass, analytic, get_phase, sliding_plv  # moved to src/ibl/signal.py
 
 
 def pi_ticks(ax):
@@ -285,7 +261,7 @@ def plot_plv_emg(D, R):
     axes[1].set_xlabel("time (s)"); axes[1].set_title("Muscle activity (EMG)", loc="left")
     h, lab = axes[0].get_legend_handles_labels()
     fig.legend(h, lab, loc="lower center", ncol=3, fontsize=9, frameon=False)
-    fig.tight_layout(rect=[0, 0.05, 1, 1])
+    fig.tight_layout(rect=(0, 0.05, 1, 1))
     return fig
 
 

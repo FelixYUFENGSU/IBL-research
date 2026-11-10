@@ -1,0 +1,9 @@
+session,centre,median minute (%),worst minute (%)
+06-18…000,global 50.000 Hz,0.16,0.3
+06-18…000,per-session 50.015 Hz,0.16,0.3
+06-18…001,global 50.000 Hz,0.21,4.5
+06-18…001,per-session 49.997 Hz,0.21,4.5
+07-09…002,global 50.000 Hz,0.27,4.6
+07-09…002,per-session 50.051 Hz,0.26,2.3
+07-21…000,global 50.000 Hz,0.6,10.9
+07-21…000,per-session 49.999 Hz,0.6,10.9
