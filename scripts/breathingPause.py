@@ -788,10 +788,10 @@ def _(SESS, SHORT, en, mo, np, pd, plt, DropParams, emg_all, emg_filter, rms_env
     _rows = []
     for _i, _s in enumerate(_vs):
         _d = bq[_s]; _b, _q = _d[_d.kind == "burst"].motion.values, _d[_d.kind == "quiet"].motion.values
-        _u = _st.mannwhitneyu(_b, _q, alternative="greater")
+        _u_stat, _u_p = _st.mannwhitneyu(_b, _q, alternative="greater")[:2]
         _ax.scatter(np.full(len(_q), _i - 0.15) + np.random.default_rng(1).uniform(-.06, .06, len(_q)), _q, color="0.6", s=18, label="quiet" if _i == 0 else None)
         _ax.scatter(np.full(len(_b), _i + 0.15) + np.random.default_rng(2).uniform(-.06, .06, len(_b)), _b, color="#c0392b", s=18, label="burst" if _i == 0 else None)
-        _rows.append(f"| {SHORT[_s]} | {len(_b)} | {np.median(_b):.2f} | {np.median(_q):.2f} | {_u.statistic / (len(_b) * len(_q)):.2f} | {_u.pvalue:.4f} |")
+        _rows.append(f"| {SHORT[_s]} | {len(_b)} | {np.median(_b):.2f} | {np.median(_q):.2f} | {float(_u_stat) / (len(_b) * len(_q)):.2f} | {float(_u_p):.4f} |")
     _ax.set_xticks(range(len(_vs))); _ax.set_xticklabels([SHORT[s] for s in _vs]); _ax.set_ylabel("mean |frame change|"); _ax.legend(fontsize=8)
     _fig.tight_layout()
     mo.vstack([_fig, mo.md("| session | bursts | median motion, bursts | median motion, quiet | AUC | p (one-sided) |\n|---|---|---|---|---|---|\n" + "\n".join(_rows) + "\n\n**Result.** In both long sessions bursts coincide with clearly more movement than quiet periods (about 3–4× the median motion), including **07-21, where there were no detectable bursts before the notch**. The development session has only 3 bursts per group, so its p-value cannot be small.")])
