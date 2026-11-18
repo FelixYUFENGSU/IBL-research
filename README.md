@@ -1,6 +1,6 @@
 # IBL: mouse breathing sensor fusion
 
-Fusing thermistor, airflow, and LFP signals to study breathing rhythm and sensor agreement in mouse M1 recordings.
+Fusing thermistor, airflow, and LFP signals to study breathing rhythm and sensor agreement in mouse recordings.
 
 ## Setup
 
