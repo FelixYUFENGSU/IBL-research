@@ -1,0 +1,5 @@
+subject,session,hours,sleep_scored,n_videos,airflow_meta,airflow_flat,airflow_MISMATCH,thermistor_meta,thermistor_flat,thermistor_MISMATCH,chest_meta,chest_flat,chest_MISMATCH
+M1,2026-06-18_16-25-09_000,0.11,False,0,True,False,False,True,False,False,False,True,False
+M1,2026-06-18_16-25-09_001,2.03,False,4,True,False,False,True,False,False,False,True,False
+M1,2026-07-09_14-23-53_002,2.9,False,0,True,False,False,True,False,False,False,True,False
+M1,2026-07-21_11-48-31_000,3.06,False,0,True,False,False,True,False,False,False,True,False
